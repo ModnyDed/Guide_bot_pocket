@@ -21,135 +21,228 @@ if not WEATHER_API_KEY or not TELEGRAM_BOT_TOKEN:
 API = WEATHER_API_KEY
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
+state = {}  # Словарь для хранения состояния и города пользователя
+attractions = {}
+last_bot_messages = {}
+
 @bot.message_handler(commands=['start'])
 def start(message):
-    file = open('./video.MP4', 'rb')
-    bot.send_video(message.chat.id, file)
     # начало переписки чата с приветствия
-    bot.send_message(message.chat.id, f'Привет, {message.from_user.first_name}! 🏖🤘')
-    bot.send_message(message.chat.id, 'Рад тебя видеть! Напиши название города')
+    bot.send_message(message.chat.id, f'Привет, {message.from_user.first_name}! 🏖')
+    bot.send_message(message.chat.id,
+                     'Рад вас видеть 😊\nНапишите город, в который планируете отправиться в путешествие')
+    state[message.chat.id] = {'status': 'waiting_for_city'}
 
 
+def send_attractions_in_parts(chat_id, attractions_list):
+    attractions_messages = []
+    current_message = ""
+    for attraction in attractions_list:
+        message_line = f"{attraction[0]}. {attraction[1]}\n{attraction[2]}\n\n"
+        if len(current_message) + len(message_line) > 4096:
+            attractions_messages.append(current_message)
+            current_message = message_line
+        else:
+            current_message += message_line
 
-@bot.message_handler(content_types=['text'])
-# def get_place(message):
-#     global city
-#     city = message.text.strip().lower()
-#
-#
-#
-#
-#
-#     bot.register_next_step_handler(message, get_weather)
+    if current_message:
+        attractions_messages.append(current_message)
+
+    for msg in attractions_messages:
+        bot.send_message(chat_id, msg)
 
 
-def get_weather(message):
-    # city = message.text.strip().lower()
+@bot.message_handler(func=lambda message: state.get(message.chat.id, {}).get('status') == 'waiting_for_city')
 
-    # url = f'https://ru.wikipedia.org/w/api.php?action=query&list=search&srsearch=достопримечательности+в+{city}&format=json'
-    #
-    # response = requests.get(url)
-    # data = response.json()
-    #
-    # # Создание списка достопримечательностей с нумерацией
-    # attractions = [(index + 1, item['title']) for index, item in enumerate(data['query']['search'])]
-    #
-    # # Вывод списка достопримечательностей с нумерацией
-    # for attraction in attractions:
-    #     bot.send_message(message.chat.id, f"{attraction[0]}. {attraction[1]}")
-    #
-    # # Предоставление выбора клиенту
-    # bot.send_message(message.chat.id, "Выберите номер достопримечательности для получения подробной информации: ")
-    # selected_attraction = message.text.strip().lower()
-    # selected_attraction = int(selected_attraction)
-    # selected_title = attractions[selected_attraction - 1][1]
-    #
-    # bot.send_message(message.chat.id, f"Вы выбрали достопримечательность: {selected_title}")
-
+def get_attractions(message):
     city = message.text.strip().lower()
+    bot.send_message(message.chat.id,
+                     f"Добро пожаловать в город {city.capitalize()}! "
+                     f"Откройте для себя его красоту, искусство и уникальные достопримечательности. "
+                     f"Не забудьте взглянуть на погоду перед выходом! 🌹🚲")
+    if not city:
+        bot.send_message(message.chat.id,
+                         "Вы ввели пустое название города. Пожалуйста, введите название города еще раз.")
+        return
+
+    state[message.chat.id]['city'] = city  # Сохраняем город в состояние пользователя
+
+    sent_msg = bot.send_message(message.chat.id, "⏳ Загружаю информацию...")
+    last_bot_messages[message.chat.id] = sent_msg.message_id
+
 
     url = f'https://ru.wikipedia.org/w/api.php?action=query&list=search&srsearch=достопримечательности+в+{city}&format=json'
-
     response = requests.get(url)
     data = response.json()
 
-    # Создание списка достопримечательностей с нумерацией
-    attractions = [(index + 1, item['title']) for index, item in enumerate(data['query']['search'])]
+    search_results = data['query']['search']
+    if not search_results:
+        bot.send_message(message.chat.id,
+                         f"К сожалению, я не смог найти информацию о достопримечательностях в городе {city}. Пожалуйста, проверьте правильность написания или введите другой город.")
+        return
 
-    # Отправка списка достопримечательностей с нумерацией через Telegram бот
-    attractions_message = "\n".join([f"{attraction[0]}. {attraction[1]}" for attraction in attractions])
-    bot.send_message(message.chat.id, attractions_message)
+        # Фильтрация результатов поиска
+        attraction_keywords = ['city']
+        filtered_results = []
+        for item in search_results:
+            title = item['title'].lower()
+            if any(keyword in title for keyword in attraction_keywords):
+                filtered_results.append(item)
+            elif city not in title or (city in title and len(title.split()) > 1):
+                # Добавляем результаты, где название города не является единственным содержанием заголовка
+                filtered_results.append(item)
 
-    # Флаг для хранения состояния ожидания выбора достопримечательности
-    state = "waiting_for_selection"
+        if not filtered_results:
+            bot.send_message(message.chat.id,
+                             f"К сожалению, я не смог найти информацию о достопримечательностях в городе {city}.")
+            return
 
-    @bot.message_handler(func=lambda message: state == "waiting_for_selection")
-    def handle_selection(message):
+    attractions[message.chat.id] = [(index + 1, item['title'], get_attraction_description(item['title'])) for
+                                    index, item in enumerate(search_results)]
+
+    ####
+    delete_previous_message(message.chat.id)
+    ####
+
+    # Отправляем список достопримечательностей
+    if attractions[message.chat.id]:
+        attractions_list = "\n".join([f"{num}. {title}" for num, title, desc in attractions[message.chat.id]])
+        bot.send_message(message.chat.id, f"Найденные достопримечательности:\n{attractions_list}")
+    else:
+        bot.send_message(message.chat.id, "Не удалось найти достопримечательности для этого города.")
+
+    bot.send_message(message.chat.id, "Введите номер достопримечательности, который вам больше приглянулся: ")
+    state[message.chat.id]['status'] = 'waiting_for_selection'
+
+# Функция для удаления сообщения через N секунд
+def delete_after_delay(chat_id, message_id, delay=5):
+    import time
+    time.sleep(delay)
+    try:
+        bot.delete_message(chat_id, message_id)
+    except Exception as e:
+        print(f"Не удалось удалить сообщение: {e}")
+
+def delete_previous_message(chat_id):
+    """Удаляет предыдущее сообщение бота в указанном чате"""
+    if chat_id in last_bot_messages:
         try:
-            selected_attraction = int(message.text)
-            selected_title = attractions[selected_attraction - 1][1]
-            bot.send_message(message.chat.id, f"Вы выбрали достопримечательность: {selected_title}")
+            bot.delete_message(chat_id, last_bot_messages[chat_id])
+            del last_bot_messages[chat_id]  # Удаляем из хранилища
+        except Exception as e:
+            print(f"Не удалось удалить сообщение: {e}")
 
-            # Сброс состояния ожидания
-            state = "default"
-        except:
-            bot.send_message(message.chat.id, "Пожалуйста, введите правильный номер достопримечательности.")
+def get_attraction_description(attraction_title):
+    url = f'https://ru.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&explaintext&titles={attraction_title}&format=json'
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        page = next(iter(data['query']['pages'].values()))
+        extract = page.get('extract', '')
 
-    #
-    # res = requests.get(f'https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={API}&units=metric')
-    # if res.status_code == 200:
-    #     #data = json.loads(res.text)
-    #
-    #     # Преобразуем ответ в JSON
-    #     data = res.json()
-    #
-    #     # Получаем текущую дату
-    #     current_date = datetime.datetime.now().date()
-    #
-    #     # Инициализируем переменные для хранения данных о погоде
-    #     forecast_data = []
-    #
-    # # Обрабатываем данные из ответа
-    #     for item in data["list"]:
-    #         # Извлекаем дату из времени
-    #         forecast_date = datetime.datetime.strptime(item["dt_txt"], "%Y-%m-%d %H:%M:%S").date()
-    #
-    #         # Проверяем, является ли дата следующим днем и время 12:00:00
-    #         if forecast_date > current_date and item["dt_txt"].endswith("12:00:00"):
-    #             # Извлекаем температуру
-    #             temperature = item["main"]["temp"]
-    #
-    #             # Извлекаем тип погоды
-    #             weather_type = item["weather"][0]["main"]
-    #
-    #             # Добавляем данные в список
-    #             forecast_data.append({
-    #                 "date": forecast_date,
-    #                 "temperature": temperature,
-    #                 "weather_type": weather_type
-    #             })
-    #
-    #
-    #
-    #     # Выводим полученные данные
-    #     if forecast_data:
-    #         for data in forecast_data:
-    #             if data["weather_type"] == 'Clouds':
-    #                 emojy = '☁️'
-    #             elif data["weather_type"] == 'Sunny' or data["weather_type"] == 'Clear':
-    #                 emojy = '☀️'
-    #             elif data["weather_type"] == 'Rain':
-    #                 emojy = '🌧'
-    #             elif data["weather_type"] == 'Snow':
-    #                 emojy = '🌨'
-    #             bot.reply_to(message,f"Погода на {data["date"]}\nТемпература: {data["temperature"]} °C\nТип погоды: {data["weather_type"]}")
-    #             bot.send_message(message.chat.id, emojy)
-    #
-    # else:
-    #     bot.reply_to(message, 'Город указан не верно')
-    #
-    #
-    #
+        # Добавление дополнительной информации
+        if 'история' in extract.lower() or 'архитектура' in extract.lower() or 'описание' in extract.lower():
+            # --------------------------------------------------------------
+            # Ваш код для получения и добавления дополнительной информации
+            # --------------------------------------------------------------
+            pass
+
+        return extract
+    return 'Информация о достопримечательности недоступна.'
+
+
+def send_attraction_details(chat_id, title):
+    # Получение дополнительной информации о достопримечательности
+    url = f'https://ru.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&explaintext&titles={title}&format=json'
+    response = requests.get(url)
+    bot.send_message(chat_id, "Ваш выбор:")
+    if response.status_code == 200:
+        data = response.json()
+        page = next(iter(data['query']['pages'].values()))
+        extract = page.get('extract', '')
+        # Отправка истории, интересных фактов и советов для туристов
+        bot.send_message(chat_id, extract)
+    else:
+        bot.send_message(chat_id, 'Информация о достопримечательности недоступна.')
+
+
+@bot.message_handler(func=lambda message: state.get(message.chat.id, {}).get('status') == 'waiting_for_selection')
+def handle_selection(message):
+    try:
+        selected_attraction = int(message.text)
+        selected_title = attractions[message.chat.id][selected_attraction - 1][1]
+        city = state[message.chat.id]['city']
+        send_attraction_details(message.chat.id, selected_title)
+        send_weather_info(message.chat.id, city)
+        state[message.chat.id]['status'] = 'waiting_for_next_action'
+    except ValueError:
+        bot.send_message(message.chat.id, "Пожалуйста, выберите правильный номер достопримечательности.")
+        state[message.chat.id]['status'] = 'waiting_for_selection'
+    except IndexError:
+        bot.send_message(message.chat.id, "Пожалуйста, выберите правильный номер достопримечательности.")
+        state[message.chat.id]['status'] = 'waiting_for_selection'
+
+
+def send_weather_info(chat_id, city):
+    res = requests.get(f'https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={API}&units=metric&lang=ru')
+    if res.status_code == 200:
+        data = res.json()
+        forecast_message = f"Погода в городе {city.capitalize()} на следующие 5 дней:\n"
+        for item in data['list']:
+            forecast_time = datetime.datetime.strptime(item['dt_txt'], '%Y-%m-%d %H:%M:%S')
+            if forecast_time.hour == 12:  # Выбираем записи, соответствующие полуденному времени
+                date = forecast_time.strftime('%Y-%m-%d')
+                temperature = item['main']['temp']
+                weather_description = item['weather'][0]['description']
+                weather_emoji = get_weather_emoji(weather_description)
+                forecast_message += f"{date}:  Температура: {temperature}°C, {weather_description.capitalize()} {weather_emoji}\n\n"
+
+        bot.send_message(chat_id, forecast_message)
+
+        # После отправки информации о погоде, предложим пользователю дальнейшие действия
+        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+        markup.add('🏬 Выбрать другой город', '✈️ Купить авиабилеты')
+        bot.send_message(chat_id, 'Желаете ли купить аваиабилет или же узнать ещё о других городах?',
+                         reply_markup=markup)
+    else:
+        bot.send_message(chat_id, 'Извините, не удалось получить информацию о погоде.')
+        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+        markup.add('🏬 Выбрать другой город', '✈️ Купить авиабилеты')
+        bot.send_message(chat_id, 'Желаете ли купить аваиабилет или же узнать ещё о других городах?',
+                         reply_markup=markup)
+
+
+def get_weather_emoji(weather_description):
+    if 'облачно' in weather_description:
+        return '☁️'
+    elif 'пасмурно' in weather_description:
+        return '☁️'
+    elif 'ясно' in weather_description:
+        return '☀️'
+    elif 'дождь' in weather_description:
+        return '🌧️'
+    elif 'снег' in weather_description:
+        return '🌨️'
+    elif 'туман' in weather_description:
+        return '🌫️'
+    else:
+        return '🌈'
+
+
+@bot.message_handler(func=lambda message: state.get(message.chat.id, {}).get('status') == 'waiting_for_next_action')
+def handle_action(message):
+    action = message.text.strip().lower()
+    if 'выбрать другой город' in action:
+        bot.send_message(message.chat.id, 'Введите название города, который вы хотите исследовать:')
+        state[message.chat.id]['status'] = 'waiting_for_city'
+    elif 'купить авиабилеты' in action:
+        bot.send_message(message.chat.id, 'Можете перейти на сайт и приобрести билеты для путешествий. 😊',
+                         reply_markup=types.InlineKeyboardMarkup().add(
+                             types.InlineKeyboardButton('Купить билеты', url='https://www.aviasales.ru/')))
+    else:
+        bot.send_message(message.chat.id, 'Пожалуйста, выберите один из предложенных вариантов.')
+        start(message)  # Повторно вызываем функцию start для отображения кнопок
+
 
 
 
