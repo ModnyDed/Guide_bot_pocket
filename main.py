@@ -11,9 +11,15 @@ import sqlite3
 # нужно как-то хранить переменную city именно на этом месте для использования функции get_weather и get_places
 # и нужно понять, как эту переменную закидывать в функции
 
-load_dotenv
-API = os.getenv('dedd8faab24bf4b5adb455980850dc90')
-bot = telebot.Telebot('7181902570:AAGkf7jrLqvhN-pJgvL6NGQr_vE3F1NYTg0')
+load_dotenv()
+
+WEATHER_API_KEY = os.getenv('WEATHER_API_KEY')
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+
+if not WEATHER_API_KEY or not TELEGRAM_BOT_TOKEN:
+    raise ValueError("API keys not found in .env file")
+API = WEATHER_API_KEY
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
 @bot.message_handler(commands=['start'])
 def start(message):
