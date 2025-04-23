@@ -1,0 +1,20 @@
+# Файлы окружения и ключи
+.env
+*.env
+config.json
+secrets/
+
+# Виртуальное окружение Python
+.venv/
+venv/
+
+# Кэш и логи
+__pycache__/
+*.pyc
+*.log
+*.tmp
+
+# IDE и системные файлы
+.idea/
+.vscode/
+.DS_Store
